@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 require('dotenv').config();
+const { AccessToken } = require('livekit-server-sdk');
 
 const app = express();
 const server = http.createServer(app);
@@ -28,6 +29,7 @@ let channels = [
   { id: 'ch2', name: 'ncr-ops', desc: 'NCR Regional Operations', members: [1], live: false },
   { id: 'ch3', name: 'incident-2024-001', desc: 'Incident Response', members: [1, 2, 3, 4], live: true },
 ];
+let invites = [];
 
 app.get('/', (req, res) => {
   res.json({ status: 'PNP SecureTalk server running' });
@@ -89,7 +91,23 @@ function authMiddleware(req, res, next) {
 }
 
 app.get('/channels', authMiddleware, (req, res) => {
-  res.json(channels);
+  const myChannels = channels.filter(c => c.members.includes(req.user.id));
+  res.json(myChannels);
+});
+
+app.post('/channels', authMiddleware, (req, res) => {
+  const { name, desc } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Channel name required' });
+  const cleanName = name.trim().toLowerCase().replace(/\s+/g, '-');
+  const newChannel = {
+    id: 'ch' + Date.now(),
+    name: cleanName,
+    desc: desc?.trim() || 'No description',
+    members: [req.user.id],
+    live: false,
+  };
+  channels.push(newChannel);
+  res.json(newChannel);
 });
 
 app.post('/channels/:id/join', authMiddleware, (req, res) => {
@@ -100,6 +118,73 @@ app.post('/channels/:id/join', authMiddleware, (req, res) => {
   }
   io.emit('channel:updated', channel);
   res.json(channel);
+});
+
+app.post('/channels/:id/invite', authMiddleware, (req, res) => {
+  const channel = channels.find(c => c.id === req.params.id);
+  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  const targetUser = users.find(u => u.email === email.toLowerCase());
+  if (!targetUser) return res.status(404).json({ error: 'No PNP account found with that email' });
+  if (channel.members.includes(targetUser.id)) {
+    return res.status(400).json({ error: 'User is already a member' });
+  }
+  const existing = invites.find(i => i.channelId === channel.id && i.toEmail === email.toLowerCase() && i.status === 'pending');
+  if (existing) return res.status(400).json({ error: 'Invite already pending for this user' });
+
+  const invite = {
+    id: 'inv' + Date.now(),
+    channelId: channel.id,
+    channelName: channel.name,
+    fromUserId: req.user.id,
+    toEmail: email.toLowerCase(),
+    status: 'pending',
+  };
+  invites.push(invite);
+  res.json(invite);
+});
+
+app.get('/invites', authMiddleware, (req, res) => {
+  const myInvites = invites.filter(i => i.toEmail === req.user.email && i.status === 'pending');
+  res.json(myInvites);
+});
+
+app.post('/invites/:id/accept', authMiddleware, (req, res) => {
+  const invite = invites.find(i => i.id === req.params.id && i.toEmail === req.user.email);
+  if (!invite) return res.status(404).json({ error: 'Invite not found' });
+  const channel = channels.find(c => c.id === invite.channelId);
+  if (!channel) return res.status(404).json({ error: 'Channel no longer exists' });
+  if (!channel.members.includes(req.user.id)) {
+    channel.members.push(req.user.id);
+  }
+  invite.status = 'accepted';
+  res.json({ channel });
+});
+
+app.post('/invites/:id/decline', authMiddleware, (req, res) => {
+  const invite = invites.find(i => i.id === req.params.id && i.toEmail === req.user.email);
+  if (!invite) return res.status(404).json({ error: 'Invite not found' });
+  invite.status = 'declined';
+  res.json({ ok: true });
+});
+
+app.post('/livekit/token', authMiddleware, (req, res) => {
+  try {
+    const { channelId } = req.body;
+    const user = users.find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const at = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, {
+      identity: String(user.id),
+      name: `${user.rank} ${user.name}`,
+    });
+    at.addGrant({ roomJoin: true, room: channelId, canPublish: true, canSubscribe: true });
+
+    res.json({ token: at.toJwt(), url: process.env.LIVEKIT_URL });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 io.on('connection', (socket) => {
