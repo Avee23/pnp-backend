@@ -90,6 +90,10 @@ function authMiddleware(req, res, next) {
   }
 }
 
+app.get('/users', authMiddleware, (req, res) => {
+  res.json(users.map(({ password, ...u }) => u));
+});
+
 app.get('/channels', authMiddleware, (req, res) => {
   const myChannels = channels.filter(c => c.members.includes(req.user.id));
   res.json(myChannels);
