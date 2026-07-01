@@ -173,7 +173,7 @@ app.post('/invites/:id/decline', authMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/livekit/token', authMiddleware, (req, res) => {
+app.post('/livekit/token', authMiddleware, async (req, res) => {
   try {
     const { channelId } = req.body;
     const user = users.find(u => u.id === req.user.id);
@@ -185,7 +185,8 @@ app.post('/livekit/token', authMiddleware, (req, res) => {
     });
     at.addGrant({ roomJoin: true, room: channelId, canPublish: true, canSubscribe: true });
 
-    res.json({ token: at.toJwt(), url: process.env.LIVEKIT_URL });
+    const token = await at.toJwt();
+    res.json({ token, url: process.env.LIVEKIT_URL });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
